@@ -75,7 +75,7 @@ pub mod i2c;
 pub mod opamp;
 pub mod prelude;
 pub mod pwm;
-// pub mod qei;
+pub mod qei;
 pub mod rcc;
 // pub mod rng;
 pub mod serial;
