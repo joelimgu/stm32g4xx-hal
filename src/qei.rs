@@ -1,10 +1,14 @@
 use core::marker::PhantomData;
+use stm32g4::stm32g431::TIM4;
 use crate::qei::SlaveMode::QuadratureEncoderModeX1CC1P;
 use crate::spi::Pins;
 use crate::timer::Timer;
 use crate::stm32::TIM2;
 
-
+trait Slave <TIM, PINS> {
+    fn read(&self) -> u32;
+    fn release(self) -> (TIM,PINS);
+}
 /// SMS (Slave Mode Selection) register
 #[derive(Copy, Clone, Debug)]
 pub enum SlaveMode {
@@ -80,8 +84,18 @@ pub struct Qei<TIM, PINS> {
     pins: PINS,
 }
 
-impl Timer<TIM2> {
-    pub fn qei<PINS>(self, pins: PINS, options: QeiOptions) -> Qei<TIM2, PINS> {
+impl Slave<TIM4,PINS> for Qei<TIM4,PINS> {
+    fn read(&self) -> u32 {
+        self.tim.cnt.read().bits()
+    }
+
+    fn release(self) -> (TIM4, PINS) {
+        (self.tim,self.pins)
+    }
+}
+
+impl Timer<TIM4> {
+    pub fn qei<PINS>(self, pins: PINS, options: QeiOptions) -> Qei<TIM4, PINS> {
         // TODO: input channel timer options
         // TODO: enum for every register status (cc1s, cc2s ...)
         // TIMx_CCMR1 -> CC1S to map tim_ti1fp1 to tim_ti1 depending on options
@@ -89,9 +103,15 @@ impl Timer<TIM2> {
             w.cc1s().bits(0b01)
         });
 
+        self.tim.cr1.write(|w| unsafe {
+            w.opm().bit(true)
+        });
+
         // TIMx_CCMR2 -> CC2S to map tim_ti2fp2 to tim_ti2 depending on options
         self.tim.ccmr1_input().write(|w| unsafe {
-            w.cc2s().bits(0b01)
+            w.cc1s()
+                .bits(0b01)
+                .bits(0b01)
         });
         // TIMx_CCER -> CC1P and CC1NP to invert ( or not ) tim_ti1fp1 tim_ti1fp1 tim_ti1
         self.tim.ccer.write(|w| unsafe {
