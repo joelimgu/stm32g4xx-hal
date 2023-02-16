@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 use stm32g4::stm32g431::TIM4;
-use crate::qei::SlaveMode::QuadratureEncoderModeX1CC1P;
+use crate::qei::EncoderMode::QuadratureEncoderModeX1CC1P;
 use crate::spi::Pins;
 use crate::timer::Timer;
 use crate::stm32::TIM2;
@@ -11,7 +11,7 @@ trait Slave <TIM, PINS> {
 }
 /// SMS (Slave Mode Selection) register
 #[derive(Copy, Clone, Debug)]
-pub enum SlaveMode {
+pub enum EncoderMode {
     /// Counter counts up/down on TI2FP1 edge depending on TI1FP2 level.
     EncoderMode1 = 0b0001,
     /// Encoder mode 2 - Counter counts up/down on TI1FP2 edge depending on TI2FP1 level.
@@ -19,7 +19,7 @@ pub enum SlaveMode {
     /// Encoder mode 3 - Counter counts up/down on both TI1FP1 and TI2FP2 edges depending on the
     /// level of the other input.
     EncoderMode3 = 0b0011,
-    /// Reset Mode - Rising edge of the selected trigger input (TRGI) reinitializes the counter and
+    /*/// Reset Mode - Rising edge of the selected trigger input (TRGI) reinitializes the counter and
     /// generates an update of the registers.
     ResetMode = 0b0100,
     /// Gated Mode - The counter clock is enabled when the trigger input (tim_trgi) is high.
@@ -37,7 +37,7 @@ pub enum SlaveMode {
     ///Combined gated + reset mode - The counter clock is enabled when the trigger input
     /// (tim_trgi) is high. The counter stops and is reset) as soon as the trigger becomes low.
     /// Both start and stop of the counter are controlled.
-    CombinedGated = 0b1001,
+    CombinedGated = 0b1001,*/
     /// Encoder mode: Clock plus direction, x2 mode.
     EncoderModeClockPlusDirectionX2 = 0b1010,
     /// Encoder mode: Clock plus direction, x1 mode, tim_ti2fp2 edge sensitivity is set by
@@ -62,8 +62,9 @@ pub enum SlaveMode {
 #[derive(Copy, Clone, Debug)]
 pub struct QeiOptions {
     /// Encoder slave mode
-    pub slave_mode: SlaveMode,
-
+    pub slave_mode: EncoderMode,
+    pub invert_ch1: bool,
+    pub invert_ch2: bool,
     /// Autoreload value
     /// This value allows the maximum count to be configured, up to 65535. Setting a lower value
     /// will overflow the counter to 0 sooner.
@@ -73,7 +74,9 @@ pub struct QeiOptions {
 impl Default for QeiOptions {
     fn default() -> Self {
         Self {
-            slave_mode: SlaveMode::EncoderMode3,
+            slave_mode: EncoderMode::EncoderMode3,
+            invert_ch1: false,
+            invert_ch2: false,
             auto_reload_value: u16::MAX,
         }
     }
@@ -95,7 +98,14 @@ impl Slave<TIM4,PINS> for Qei<TIM4,PINS> {
 }
 
 impl Timer<TIM4> {
+    // TODO: ResetMode, GatedMode,TriggerMode,ExternalClockMode1...
+    // CC1P / CC2P -> Configuration de l'inversion d'un channel (CF p.1318)
+    // SMS -> 9 modes possibles
     pub fn qei<PINS>(self, pins: PINS, options: QeiOptions) -> Qei<TIM4, PINS> {
+        // TIMx_CR1 -> CEN disable timer before editing its configuration
+        self.tim.cr1.write(|w| unsafe {
+            w.cen().clear_bit()
+        });
         // TODO: input channel timer options
         // TODO: enum for every register status (cc1s, cc2s ...)
         // TIMx_CCMR1 -> CC1S to map tim_ti1fp1 to tim_ti1 depending on options
@@ -104,7 +114,7 @@ impl Timer<TIM4> {
         });
 
         self.tim.cr1.write(|w| unsafe {
-            w.opm().bit(true)
+            w.opm().set_bit()
         });
 
         // TIMx_CCMR2 -> CC2S to map tim_ti2fp2 to tim_ti2 depending on options
@@ -115,13 +125,13 @@ impl Timer<TIM4> {
         });
         // TIMx_CCER -> CC1P and CC1NP to invert ( or not ) tim_ti1fp1 tim_ti1fp1 tim_ti1
         self.tim.ccer.write(|w| unsafe {
-            w.cc1p().bit(false)
+            w.cc1p().clear_bit()
         });
         // TIMx_CCER -> CC2P and CC2NP to invert ( or not ) tim_ti2fp2 tim_ti2fp2 tim_ti2
         self.tim.ccer.write(|w| unsafe {
             w
-                .cc2p().bit(false)
-                .cc2np().bit(false)
+                .cc2p().clear_bit()
+                .cc2np().clear_bit()
         });
         // TIMx_SMCR -> SMS to configure slave mode
         self.tim.smcr.write(|w| unsafe {
@@ -131,7 +141,7 @@ impl Timer<TIM4> {
         });
         // TIMx_CR1 -> CEN activate counter
         self.tim.cr1.write(|w| unsafe {
-            w.cen().bit(true)
+            w.cen().set_bit()
         });
         Qei { tim: self.tim, pins }
     }
