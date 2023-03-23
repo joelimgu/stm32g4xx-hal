@@ -22,10 +22,14 @@ pub struct Clocks {
     pub core_clk: Hertz,
     /// AHB frequency
     pub ahb_clk: Hertz,
-    /// APB frequency
-    pub apb_clk: Hertz,
-    /// APB timers frequency
-    pub apb_tim_clk: Hertz,
+    /// APB 1 frequency
+    pub apb1_clk: Hertz,
+    /// APB 1 timers frequency (Timers 2-7)
+    pub apb1_tim_clk: Hertz,
+    /// APB 2 frequency
+    pub apb2_clk: Hertz,
+    /// APB 2 timers frequency (Timers 1, 8, 20, 15, 16, 17 and HRTIM1)
+    pub apb2_tim_clk: Hertz,
     /// PLL frequency
     pub pll_clk: PLLClocks,
 }
@@ -34,7 +38,7 @@ pub struct Clocks {
 #[derive(Clone, Copy, Debug)]
 pub struct PLLClocks {
     /// R frequency
-    pub r: Hertz,
+    pub r: Option<Hertz>,
     /// Q frequency
     pub q: Option<Hertz>,
     /// P frequency
@@ -48,10 +52,12 @@ impl Default for Clocks {
             sys_clk: freq,
             ahb_clk: freq,
             core_clk: freq,
-            apb_clk: freq,
-            apb_tim_clk: freq,
+            apb1_clk: freq,
+            apb1_tim_clk: freq,
+            apb2_clk: freq,
+            apb2_tim_clk: freq,
             pll_clk: PLLClocks {
-                r: 32.mhz(),
+                r: None,
                 q: None,
                 p: None,
             },
@@ -80,7 +86,13 @@ impl Rcc {
                 self.enable_hse(false);
                 (freq, 0b10)
             }
-            SysClockSrc::PLL => (pll_clk.r, 0b11),
+            SysClockSrc::PLL => {
+                // If PLL is selected as sysclock then the r output should have been configured
+                if pll_clk.r.is_none() {
+                    panic!("PLL output selected as sysclock but PLL output R is not configured")
+                }
+                (pll_clk.r.unwrap(), 0b11)
+            }
         };
 
         let sys_freq = sys_clk.0;
@@ -95,7 +107,14 @@ impl Rcc {
             Prescaler::Div512 => (sys_freq / 512, 0b1111),
             _ => (sys_clk.0, 0b0000),
         };
-        let (apb_freq, apb_psc_bits) = match rcc_cfg.apb_psc {
+        let (apb1_freq, apb1_psc_bits) = match rcc_cfg.apb1_psc {
+            Prescaler::Div2 => (sys_clk.0 / 2, 0b100),
+            Prescaler::Div4 => (sys_clk.0 / 4, 0b101),
+            Prescaler::Div8 => (sys_clk.0 / 8, 0b110),
+            Prescaler::Div16 => (sys_clk.0 / 16, 0b111),
+            _ => (sys_clk.0, 0b000),
+        };
+        let (apb2_freq, apb2_psc_bits) = match rcc_cfg.apb2_psc {
             Prescaler::Div2 => (sys_clk.0 / 2, 0b100),
             Prescaler::Div4 => (sys_clk.0 / 4, 0b101),
             Prescaler::Div8 => (sys_clk.0 / 8, 0b110),
@@ -121,14 +140,29 @@ impl Rcc {
             w.hpre()
                 .bits(ahb_psc_bits)
                 .ppre1()
-                .bits(apb_psc_bits)
+                .bits(apb1_psc_bits)
                 .ppre2()
-                .bits(apb_psc_bits)
+                .bits(apb2_psc_bits)
                 .sw()
                 .bits(sw_bits)
         });
 
         while self.rb.cfgr.read().sws().bits() != sw_bits {}
+
+        // From RM:
+        // The timer clock frequencies are automatically defined by hardware. There are two cases:
+        // 1. If the APB prescaler equals 1, the timer clock frequencies are set to the same
+        // frequency as that of the APB domain.
+        // 2. Otherwise, they are set to twice (×2) the frequency of the APB domain.
+        let apb1_tim_clk = match rcc_cfg.apb1_psc {
+            Prescaler::NotDivided => apb1_freq,
+            _ => apb1_freq * 2,
+        };
+
+        let apb2_tim_clk = match rcc_cfg.apb2_psc {
+            Prescaler::NotDivided => apb2_freq,
+            _ => apb2_freq * 2,
+        };
 
         Rcc {
             rb: self.rb,
@@ -137,8 +171,10 @@ impl Rcc {
                 sys_clk,
                 core_clk: ahb_freq.hz(),
                 ahb_clk: ahb_freq.hz(),
-                apb_clk: apb_freq.hz(),
-                apb_tim_clk: apb_freq.hz(),
+                apb1_clk: apb1_freq.hz(),
+                apb1_tim_clk: apb1_tim_clk.hz(),
+                apb2_clk: apb2_freq.hz(),
+                apb2_tim_clk: apb2_tim_clk.hz(),
             },
         }
     }
@@ -150,14 +186,12 @@ impl Rcc {
     }
 
     fn config_pll(&self, pll_cfg: PllConfig) -> PLLClocks {
-        assert!(pll_cfg.m > 0 && pll_cfg.m <= 8);
-        assert!(pll_cfg.r > 1 && pll_cfg.r <= 8);
-
         // Disable PLL
-        self.rb.cr.write(|w| w.pllon().clear_bit());
+        self.rb.cr.modify(|_, w| w.pllon().clear_bit());
         while self.rb.cr.read().pllrdy().bit_is_set() {}
 
-        let (freq, pll_sw_bits) = match pll_cfg.mux {
+        // Enable the input clock feeding the PLL
+        let (pll_input_freq, pll_src_bits) = match pll_cfg.mux {
             PLLSrc::HSI => {
                 self.enable_hsi();
                 (HSI_FREQ, 0b10)
@@ -172,67 +206,88 @@ impl Rcc {
             }
         };
 
-        let pll_freq = freq / (pll_cfg.m as u32) * (pll_cfg.n as u32);
-        let r = (pll_freq / (pll_cfg.r as u32)).hz();
-        let q = match pll_cfg.q {
-            Some(div) if div > 1 && div <= 8 => {
-                self.rb.pllcfgr.write(move |w| w.pllq().bits(div - 1));
-                let req = freq / div as u32;
-                Some(req.hz())
-            }
-            _ => None,
-        };
+        // Calculate the frequency of the internal PLL VCO.
+        let pll_freq = pll_input_freq / pll_cfg.m.divisor() * pll_cfg.n.multiplier();
 
-        let p = match pll_cfg.p {
-            Some(div) if div > 1 && div <= 8 => {
-                self.rb.pllcfgr.write(move |w| w.pllp().bit(div == 17));
-                let req = freq / div as u32;
-                Some(req.hz())
-            }
-            _ => None,
-        };
+        // Calculate the output frequencies for the P, Q, and R outputs
+        let p = pll_cfg
+            .p
+            .map(|p| ((pll_freq / p.divisor()).hz(), p.register_setting()));
 
-        self.rb.pllcfgr.write(move |w| unsafe {
-            w.pllsrc()
-                .bits(pll_sw_bits)
-                .pllm()
-                .bits(pll_cfg.m - 1)
+        let q = pll_cfg
+            .q
+            .map(|q| ((pll_freq / q.divisor()).hz(), q.register_setting()));
+
+        let r = pll_cfg
+            .r
+            .map(|r| ((pll_freq / r.divisor()).hz(), r.register_setting()));
+
+        // Set the M input divider, the N multiplier for the PLL, and the PLL source.
+        self.rb.pllcfgr.modify(|_, w| unsafe {
+            // Set N, M, and source
+            let w = w
                 .plln()
-                .bits(pll_cfg.n)
-                .pllr()
-                .bits((pll_cfg.r / 2) - 1)
-                .pllren()
-                .set_bit()
+                .bits(pll_cfg.n.register_setting())
+                .pllm()
+                .bits(pll_cfg.m.register_setting())
+                .pllsrc()
+                .bits(pll_src_bits);
+
+            // Set and enable P if requested
+            let w = match p {
+                Some((_, register_setting)) => {
+                    w.pllpdiv().bits(register_setting).pllpen().set_bit()
+                }
+                None => w,
+            };
+
+            // Set and enable Q if requested
+            let w = match q {
+                Some((_, register_setting)) => w.pllq().bits(register_setting).pllqen().set_bit(),
+                None => w,
+            };
+
+            // Set and enable R if requested
+            let w = match r {
+                Some((_, register_setting)) => w.pllr().bits(register_setting).pllren().set_bit(),
+                None => w,
+            };
+
+            w
         });
 
         // Enable PLL
         self.rb.cr.modify(|_, w| w.pllon().set_bit());
         while self.rb.cr.read().pllrdy().bit_is_clear() {}
 
-        PLLClocks { r, q, p }
+        PLLClocks {
+            r: r.map(|r| r.0),
+            q: q.map(|q| q.0),
+            p: p.map(|p| p.0),
+        }
     }
 
     pub(crate) fn enable_hsi(&self) {
-        self.rb.cr.write(|w| w.hsion().set_bit());
+        self.rb.cr.modify(|_, w| w.hsion().set_bit());
         while self.rb.cr.read().hsirdy().bit_is_clear() {}
     }
 
     pub(crate) fn enable_hse(&self, bypass: bool) {
         self.rb
             .cr
-            .write(|w| w.hseon().set_bit().hsebyp().bit(bypass));
+            .modify(|_, w| w.hseon().set_bit().hsebyp().bit(bypass));
         while self.rb.cr.read().hserdy().bit_is_clear() {}
     }
 
     pub(crate) fn enable_lse(&self, bypass: bool) {
         self.rb
             .bdcr
-            .write(|w| w.lseon().set_bit().lsebyp().bit(bypass));
+            .modify(|_, w| w.lseon().set_bit().lsebyp().bit(bypass));
         while self.rb.bdcr.read().lserdy().bit_is_clear() {}
     }
 
     pub(crate) fn enable_lsi(&self) {
-        self.rb.csr.write(|w| w.lsion().set_bit());
+        self.rb.csr.modify(|_, w| w.lsion().set_bit());
         while self.rb.csr.read().lsirdy().bit_is_clear() {}
     }
 }
@@ -426,33 +481,27 @@ impl GetBusFreq for AHB3 {
 
 impl GetBusFreq for APB1_1 {
     fn get_frequency(clocks: &Clocks) -> Hertz {
-        clocks.apb_clk
+        clocks.apb1_clk
     }
     fn get_timer_frequency(clocks: &Clocks) -> Hertz {
-        // let pclk_mul = if clocks.ppre1 == 1 { 1 } else { 2 };
-        // Hertz(clocks.pclk1.0 * pclk_mul)
-        clocks.apb_tim_clk
+        clocks.apb1_tim_clk
     }
 }
 
 impl GetBusFreq for APB1_2 {
     fn get_frequency(clocks: &Clocks) -> Hertz {
-        clocks.apb_clk
+        clocks.apb1_clk
     }
     fn get_timer_frequency(clocks: &Clocks) -> Hertz {
-        // let pclk_mul = if clocks.ppre1 == 1 { 1 } else { 2 };
-        // Hertz(clocks.pclk1.0 * pclk_mul)
-        clocks.apb_tim_clk
+        clocks.apb1_tim_clk
     }
 }
 
 impl GetBusFreq for APB2 {
     fn get_frequency(clocks: &Clocks) -> Hertz {
-        clocks.apb_clk
+        clocks.apb2_clk
     }
     fn get_timer_frequency(clocks: &Clocks) -> Hertz {
-        // let pclk_mul = if clocks.ppre2 == 1 { 1 } else { 2 };
-        // Hertz(clocks.pclk2.0 * pclk_mul)
-        clocks.apb_tim_clk
+        clocks.apb2_tim_clk
     }
 }
