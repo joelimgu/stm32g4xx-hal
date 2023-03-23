@@ -8,7 +8,8 @@ use stm32g4xx_hal::{
     gpio::{gpioc, ExtiPin, GpioExt, Input, PullDown, SignalEdge},
     rcc::RccExt,
     stm32,
-    stm32::{interrupt, Interrupt},
+    stm32::{
+        interrupt, Interrupt},
     syscfg::SysCfgExt,
 };
 
@@ -73,7 +74,7 @@ fn main() -> ! {
 
     rprintln!("Enable EXTI Interrupt");
     unsafe {
-        cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI15_10);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::USART1);
     }
 
     //let mut delay = cp.SYST.delay(&rcc.clocks);

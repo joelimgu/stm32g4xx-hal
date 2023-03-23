@@ -48,6 +48,7 @@ fn main() -> ! {
             &mut rcc,
         )
         .unwrap();
+    usart.split()
 
     let mut delay_syst = cp.SYST.delay(&rcc.clocks);
     let mut led = gpioa.pa5.into_push_pull_output();

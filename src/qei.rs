@@ -87,7 +87,7 @@ pub struct Qei<TIM, PINS> {
     pins: PINS,
 }
 
-impl Slave<TIM4,PINS> for Qei<TIM4,PINS> {
+impl <PINS> Slave<TIM4, PINS> for Qei<TIM4,PINS> {
     fn read(&self) -> u32 {
         self.tim.cnt.read().bits()
     }
@@ -101,6 +101,10 @@ impl Timer<TIM4> {
     // TODO: ResetMode, GatedMode,TriggerMode,ExternalClockMode1...
     // CC1P / CC2P -> Configuration de l'inversion d'un channel (CF p.1318)
     // SMS -> 9 modes possibles
+
+    // pub fn pulse_count(self, ...) -> PulseCount {
+    //
+    // }
     pub fn qei<PINS>(self, pins: PINS, options: QeiOptions) -> Qei<TIM4, PINS> {
         // TIMx_CR1 -> CEN disable timer before editing its configuration
         self.tim.cr1.write(|w| unsafe {

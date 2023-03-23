@@ -18,6 +18,7 @@ use stm32g4::stm32g431::tim1::AF2;
 use hal::gpio::Alternate;
 use stm32g4xx_hal::gpio::gpiob::{PB6, PB7};
 use stm32g4xx_hal::qei::QeiOptions;
+use stm32g4xx_hal::timer::Event;
 
 #[macro_use]
 mod utils;
@@ -35,6 +36,11 @@ fn main() -> ! {
     let ch1: PB6<Alternate<{ AF2 }>> = gpiob.pb6.into_alternate();
     let ch2: PB7<Alternate<{ AF2 }>> = gpiob.pb7.into_alternate();
 
+
+    let tim = Timer::new(dp.TIM2, &rcc.clocks);
+    let mut tim2 = tim.start_count_down(100.hz());
+    tim2.listen(Event::TimeOut);
+
     let qei = Timer::new(dp.TIM4, &rcc.clocks)
         .qei((ch1,ch2),QeiOptions::default());
 
@@ -44,6 +50,6 @@ fn main() -> ! {
     // let mut delay_tim2 = DelayFromCountDownTimer::new(timer2.start_count_down(100.ms()));
 
     loop {
-        hprintln!("Value: {}", qei.read());
+        // hprintln!("Value: {}", qei.read());
     }
 }
