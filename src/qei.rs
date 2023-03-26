@@ -87,6 +87,12 @@ pub struct Qei<TIM, PINS> {
     pins: PINS,
 }
 
+impl<PINS> Qei<TIM4, PINS> {
+    pub fn read(&self) -> u32 {
+        self.tim.cnt.read().bits()
+    }
+}
+
 impl <PINS> Slave<TIM4, PINS> for Qei<TIM4,PINS> {
     fn read(&self) -> u32 {
         self.tim.cnt.read().bits()
@@ -98,6 +104,8 @@ impl <PINS> Slave<TIM4, PINS> for Qei<TIM4,PINS> {
 }
 
 impl Timer<TIM4> {
+
+
     // TODO: ResetMode, GatedMode,TriggerMode,ExternalClockMode1...
     // CC1P / CC2P -> Configuration de l'inversion d'un channel (CF p.1318)
     // SMS -> 9 modes possibles
